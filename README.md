@@ -9,6 +9,7 @@
 
 - Python 3.8 以上（Windows で動作確認。画面は標準の tkinter なので、追加インストールは不要です）
 - 月面の写真を地図の下に敷きたい場合だけ、Pillow が必要です
+- また最初に起動した後、quickmapからデータをダウンロードする必要あるため１時間近く放置する必要あります！！！！！
 
 ```
 pip install -r requirements.txt
