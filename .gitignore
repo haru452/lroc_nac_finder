@@ -1,1 +1,7 @@
 lroc_nac_cache.sqlite
+
+tile_cache/
+lroc_nac_settings.json
+__pycache__/
+*.pyc
+.claude/
