@@ -23,6 +23,7 @@ import place_names as pn   # 地名(静かの海など)   # 月面の背景地�
 ODE = "https://oderest.rsl.wustl.edu/live2/"
 PAGE = 1000
 SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lroc_nac_settings.json")
+PRODUCT_URL = "https://data.lroc.im-ldi.com/lroc/view_lroc/LRO-L-LROC-2-EDR-V1.0/"   # 画像ごとのページ(ダウンロードリンクあり)
 QUICKMAP_URL = "https://quickmap.lroc.im-ldi.com/query"
 MOON_R = 1737400.0   # QuickMapの座標(メートル)への変換に使う月の半径
 
@@ -207,6 +208,11 @@ def analyse(recs, c):
     return rows
 
 
+def product_url(image_id):
+    """画像ID(M1274075475LE など)のダウンロードページ。EDR・CDR・プレビュー画像へのリンクが載っている。"""
+    return PRODUCT_URL + urllib.parse.quote(image_id)
+
+
 def obs_ids(r):
     """セル内の撮影ID(左右カメラの LE/RE を除いた M13xxxxxxxx)を古い順に並べる。"""
     return sorted({i["id"][:-2] for i in r["items"]})
@@ -297,13 +303,13 @@ def nice_step(rng):
 # ---------------------------------------------------------------- GUI
 class App:
     FIELDS = [
-        ("緯度 最小 (空欄=全体)", "latmin", ""), ("緯度 最大 (空欄=全体)", "latmax", ""),
-        ("経度 最小 (空欄=全体)", "lonmin", ""), ("経度 最大 (空欄=全体)", "lonmax", ""),
-        ("入射角 最小 (40以上)", "incmin", "50"), ("入射角 最大 (80以下)", "incmax", "70"),
-        ("エミッション角 最小 (°)", "emimin", "0"), ("エミッション角 最大 (10以下)", "emimax", "5"),
-        ("照明の幅: 入射角のくくり (°)", "incwidth", "5"),
-        ("グリッドの大きさ (°)", "grid", "0.5"),
-        ("表示する最小撮影回数", "minobs", "3"),
+        ("緯度 最小", "latmin", ""), ("緯度 最大", "latmax", ""),
+        ("経度 最小", "lonmin", ""), ("経度 最大", "lonmax", ""),
+        ("入射角 最小", "incmin", "50"), ("入射角 最大", "incmax", "70"),
+        ("エミッション角 最小", "emimin", "0"), ("エミッション角 最大", "emimax", "5"),
+        ("入射角のくくり(°)", "incwidth", "5"),
+        ("グリッド(°)", "grid", "0.5"),
+        ("最小撮影回数", "minobs", "3"),
     ]
     OPTIONAL = {"latmin": -90.0, "latmax": 90.0, "lonmin": 0.0, "lonmax": 360.0}
     ML, MR, MT, MB = 46, 14, 22, 24  # 地図の余白
@@ -347,6 +353,8 @@ class App:
         self.side = tk.StringVar(value="両方")
         ttk.Combobox(frm, textvariable=self.side, width=10, state="readonly",
                      values=["両方", "東(右・朝)", "西(左・夕)"]).grid(row=r, column=1, sticky="w", padx=4)
+        ttk.Label(frm, text="緯度・経度は空欄なら月全体 / 入射角は40〜80° / エミッション角は0〜10° の範囲で指定",
+                  style="Mute.TLabel").grid(row=r + 1, column=0, columnspan=6, sticky="w", padx=4, pady=(2, 0))
         ttk.Label(frm, text="画像の種類コード").grid(row=r, column=2, sticky="e", padx=4)
         self.pt = tk.StringVar(value="自動")
         self.ptbox = ttk.Combobox(frm, textvariable=self.pt, width=12, values=["自動"])
@@ -366,12 +374,15 @@ class App:
         ttk.Label(eq, text="°").pack(side="left")
         self.btn = ttk.Button(sbox, text="検索", style="Accent.TButton", command=self.start)
         self.btn.pack(fill="x", padx=4, pady=(4, 2))
-        ttk.Button(sbox, text="中止", command=lambda: setattr(self, "stop", True)).pack(fill="x", padx=4, pady=1)
-        ttk.Button(sbox, text="接続テスト/項目確認", command=self.test).pack(fill="x", padx=4, pady=(1, 4))
+        ttk.Button(sbox, text="中止", command=lambda: setattr(self, "stop", True)).pack(fill="x", padx=4, pady=(1, 4))
 
         mbox = ttk.LabelFrame(bar, text="地図の表示")
         mbox.pack(side="left", fill="y", padx=(6, 0))
-        ttk.Button(mbox, text="全体表示に戻す", command=self.reset_view).pack(fill="x", padx=4, pady=(4, 2))
+        zr = ttk.Frame(mbox)
+        zr.pack(fill="x", padx=4, pady=(4, 2))
+        ttk.Button(zr, text="＋", width=3, command=lambda: self.zoom_by(0.7)).pack(side="left")
+        ttk.Button(zr, text="－", width=3, command=lambda: self.zoom_by(1 / 0.7)).pack(side="left", padx=2)
+        ttk.Button(zr, text="全体表示に戻す", command=self.reset_view).pack(side="left", fill="x", expand=True)
         self.bg_on = tk.BooleanVar(value=bp.OK)
         cb = ttk.Checkbutton(mbox, text="月面の写真を下に敷く", variable=self.bg_on, command=self.draw)
         cb.pack(fill="x", padx=4)
@@ -418,10 +429,14 @@ class App:
         ttk.Label(root, textvariable=self.hover, style="Mute.TLabel").pack(fill="x", padx=8)
         # 選んだセルの撮影ID(M13xxxxxxxx)。コピーできる読み取り専用欄
         self.idvar = tk.StringVar(value="")
-        ttk.Entry(root, textvariable=self.idvar, state="readonly").pack(fill="x", padx=8)
+        idrow = ttk.Frame(root)
+        idrow.pack(fill="x", padx=8)
+        ttk.Button(idrow, text="IDをコピー", command=self.copy_ids).pack(side="right", padx=(6, 0))
+        ttk.Button(idrow, text="セル内の全IDの画像ページを開く(ダウンロード)", command=self.open_all_products).pack(side="right", padx=(6, 0))
+        ttk.Entry(idrow, textvariable=self.idvar, state="readonly").pack(side="left", fill="x", expand=True)
         # 操作ヒントは地図の状態に関係なく常に表示する
         ttk.Label(root, style="Mute.TLabel", wraplength=1200, text=(
-            "地図の操作:  ホイール=拡大・縮小  /  ホイール押しながら または 右ドラッグ=移動  /  "
+            "地図の操作:  ホイール または ＋－キー=拡大・縮小  /  矢印キー=移動  /  Home=全体表示  /  ホイール押しながら または 右ドラッグ=移動  /  "
             "左ドラッグ=囲んだ範囲を拡大  /  右クリック=全体表示  /  左クリック=セルを選ぶ  /  ダブルクリック=QuickMapでその場所を開く  /  順位表の行=その場所へ")
         ).pack(fill="x", padx=8, pady=(2, 0))
 
@@ -435,8 +450,8 @@ class App:
         pw.add(tf, weight=1)
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=5)
         for c_, h in zip(cols, heads):
-            self.tree.heading(c_, text=h)
-            self.tree.column(c_, width=95, anchor="center")
+            self.tree.heading(c_, text=h, command=lambda k=c_: self.sort_tree(k))   # 見出しクリックで並べ替え
+            self.tree.column(c_, width={"rank": 55, "total": 130, "inc": 110}.get(c_, 95), anchor="center")
         sb = ttk.Scrollbar(tf, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -445,6 +460,14 @@ class App:
 
         self.cv.bind("<Configure>", lambda e: self.on_resize())
         self.cv.bind("<Double-Button-1>", self.on_double)
+        self.cv.bind("<Enter>", lambda e: self.cv.focus_set())   # 地図の上ではキーで操作できる
+        for k in ("<plus>", "<equal>", "<KP_Add>"):
+            self.cv.bind(k, lambda e: self.zoom_by(0.7))
+        for k in ("<minus>", "<KP_Subtract>"):
+            self.cv.bind(k, lambda e: self.zoom_by(1 / 0.7))
+        for k, d in (("<Left>", (-.2, 0)), ("<Right>", (.2, 0)), ("<Up>", (0, .2)), ("<Down>", (0, -.2))):
+            self.cv.bind(k, lambda e, d=d: self.pan_by(*d))
+        self.cv.bind("<Home>", lambda e: self.reset_view())
         self.cv.bind("<ButtonPress-1>", self.on_press)
         self.cv.bind("<B1-Motion>", self.on_drag)
         self.cv.bind("<ButtonRelease-1>", self.on_release)
@@ -565,35 +588,12 @@ class App:
         finally:
             self.q.put(("done", None))
 
-    def test(self):
-        try:
-            c = self.conds()
-        except ValueError as e:
-            messagebox.showerror("入力エラー", str(e)); return
-        ptval = self.pt.get()
-
-        def run():
-            try:
-                pt = self.get_pt(ptval)
-                cc = dict(c, lonmin=23, lonmax=24, latmin=-1, latmax=1)
-                prods = products_of(fetch(dict(base_params(cc, pt, False), limit=3, offset=0)))
-                txt = "種類コード: %s\n取得できた件数: %d\n\n" % (pt, len(prods))
-                for pr in prods[:2]:
-                    f = flat(pr)
-                    txt += "解釈結果: %s\n" % parse_record(pr)
-                    txt += "項目: " + ", ".join(sorted(f.keys())) + "\n\n"
-                self.q.put(("info", txt))
-            except Exception as e:  # noqa
-                self.q.put(("info", "失敗: %s" % e))
-        threading.Thread(target=run, daemon=True).start()
-
     def poll(self):
         try:
             while True:
                 k, v = self.q.get_nowait()
                 if k == "status": self.status.set(v)
                 elif k == "done": self.btn.state(["!disabled"])
-                elif k == "info": messagebox.showinfo("接続テスト", v[:3000])
                 elif k == "redraw": self.bg_loading = False; self.draw()
                 elif k == "types":
                     self.ptbox.configure(values=["自動"] + list(v))
@@ -669,13 +669,13 @@ class App:
         while v <= x1:
             x = self.tx(v)
             cv.create_line(x, T, x, B, fill=gridcol, dash=(2, 4) if photo else None)
-            cv.create_text(x, B + 3, anchor="n", text="%g" % v, fill=self.th["axis"], font=("", 8))
+            cv.create_text(x, B + 3, anchor="n", text="%g" % v, fill=self.th["axis"], font=("", 9))
             v += sx
         v = math.ceil(y0 / sy) * sy
         while v <= y1:
             y = self.ty(v)
             cv.create_line(L, y, R, y, fill=gridcol, dash=(2, 4) if photo else None)
-            cv.create_text(L - 4, y, anchor="e", text="%g" % v, fill=self.th["axis"], font=("", 8))
+            cv.create_text(L - 4, y, anchor="e", text="%g" % v, fill=self.th["axis"], font=("", 9))
             v += sy
         if self.cellmap:
             mx = max(r["obs"] for r in self.cellmap.values())
@@ -712,8 +712,8 @@ class App:
             if bb:
                 bg = cv.create_rectangle(bb[0] - 3, bb[1] - 1, bb[2] + 3, bb[3] + 1, fill=self.th["label_bg"], outline=self.th["sel"])
                 cv.tag_lower(bg, tid)
-        cv.create_text(4, 4, anchor="nw", text="緯度", font=("", 8), fill=self.th["axis"])
-        cv.create_text(L, H - 2, anchor="sw", text="東経(°)  →東(右)", font=("", 8), fill=self.th["axis"])
+        cv.create_text(4, 4, anchor="nw", text="緯度", font=("", 9), fill=self.th["axis"])
+        cv.create_text(L, H - 2, anchor="sw", text="東経(°)  →東(右)", font=("", 9), fill=self.th["axis"])
 
     def draw_names(self, L, R, T, B):
         """表示範囲に入る地名を描く。広く見ているときは海だけ、拡大したらクレーターとアポロ着陸地点も出す。"""
@@ -822,6 +822,37 @@ class App:
         else:
             self.draw()
 
+    def sort_tree(self, col):
+        """順位表を、押した列で並べ替える(もう一度押すと逆順)。行の中身(順位の番号)は変えない。"""
+        rev = getattr(self, "_sort", (None, False))
+        desc = not rev[1] if rev[0] == col else (col in ("obs", "n", "total"))   # 回数や枚数は多い順から
+        def key(i):
+            v = self.tree.set(i, col)
+            try:
+                return (0, float(v.rstrip("°").split("〜")[0]))
+            except ValueError:
+                return (1, v)
+        items = sorted(self.tree.get_children(""), key=key, reverse=desc)
+        for pos, i in enumerate(items):
+            self.tree.move(i, "", pos)
+        self._sort = (col, desc)
+
+    def zoom_by(self, f):
+        """画面の中心を基準に拡大(f<1)・縮小(f>1)。ボタンとキー操作用。"""
+        if not self.view:
+            return
+        x0, x1, y0, y1 = self.view
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        self.set_view(cx - (cx - x0) * f, cx + (x1 - cx) * f, cy - (cy - y0) * f, cy + (y1 - cy) * f)
+
+    def pan_by(self, fx, fy):
+        """表示範囲の幅・高さの割合だけ動かす(キー操作用)。"""
+        if not self.view:
+            return
+        x0, x1, y0, y1 = self.view
+        dx, dy = (x1 - x0) * fx, (y1 - y0) * fy
+        self.set_view(x0 + dx, x1 + dx, y0 + dy, y1 + dy)
+
     def on_wheel(self, e):
         if not self.view:
             return
@@ -909,6 +940,28 @@ class App:
             s += "  |  撮影回数 %d / %d枚 / 入射角 %g〜%g° / 太陽 %s" % (r["obs"], r["n"], r["inc0"], r["inc1"], r["side"])
         self.hover.set(s)
 
+    def copy_ids(self):
+        r = self.cur()
+        if r:
+            self.root.clipboard_clear(); self.root.clipboard_append(" ".join(obs_ids(r)))
+            self.status.set("撮影IDをコピーしました(%d件)" % len(obs_ids(r)))
+
+    def open_all_products(self):
+        """選んだセルにある撮影IDすべての画像ページを、ブラウザのタブで順に開く。
+        左右カメラ(LE/RE)のうち、セルの中にある方のページを開く。"""
+        r = self.cur()
+        if not r:
+            return
+        pages = {}
+        for i in r["items"]:
+            pages.setdefault(i["id"][:-2], i["id"])     # 撮影IDごとに1ページ
+        urls = [product_url(pages[k]) for k in sorted(pages)]
+        if len(urls) > 8 and not messagebox.askokcancel("確認", "%d個のページを開きます。よろしいですか?" % len(urls)):
+            return
+        for n, u in enumerate(urls):
+            self.root.after(n * 400, lambda u=u: webbrowser.open_new_tab(u))   # 少し間をあけて開く
+        self.status.set("%d個の画像ページを開きます(EDR/CDRのダウンロードリンクがあります)" % len(urls))
+
     def show_ids(self, r):
         ids = obs_ids(r)
         self.idvar.set("撮影ID(%d回): %s" % (len(ids), "  ".join(ids)))
@@ -957,9 +1010,9 @@ class App:
         fn = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="nac_cell.csv")
         if not fn: return
         with open(fn, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f); w.writerow(["画像ID", "緯度", "東経", "入射角", "エミッション角", "太陽の向き", "撮影時刻"])
+            w = csv.writer(f); w.writerow(["画像ID", "緯度", "東経", "入射角", "エミッション角", "太陽の向き", "撮影時刻", "画像ページ"])
             for i in sorted(r["items"], key=lambda x: x["time"]):
-                w.writerow([i["id"], i["lat"], i["lon"], i["inc"], i["emi"], i["side"], i["time"]])
+                w.writerow([i["id"], i["lat"], i["lon"], i["inc"], i["emi"], i["side"], i["time"], product_url(i["id"])])
         self.status.set("保存しました: " + fn)
 
     def save_all(self):
