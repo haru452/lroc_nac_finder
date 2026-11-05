@@ -44,7 +44,7 @@ class MapView:
         cv.delete("all")
         if not self.view:
             cv.create_text(20, 20, anchor="nw", fill=self.th["hint"],
-                           text="ここに地図が出ます(東が右・北が上)。条件を入れて[検索]を押してください。\n操作: ホイール=拡大縮小 / ホイール押しながら or 右ドラッグ=移動 / 左ドラッグ=範囲を囲んで拡大 / 右クリック=全体表示 / 左クリック=セル選択")
+                           text="ここに地図が出ます(東が右・北が上)。条件を入れて[検索]を押してください。\n操作: ホイール=拡大縮小 / ホイール押しながら or 右ドラッグ=移動 / 右クリック=全体表示 / 左クリック=セル選択 / セルの中をクリック=点を打つ / セルの中を左ドラッグ=四角で囲む(そこを写す画像だけに絞る)")
             return
         x0, x1, y0, y1 = self.view
         W, H = cv.winfo_width(), cv.winfo_height()
@@ -103,6 +103,7 @@ class MapView:
             if bb:
                 bg = cv.create_rectangle(bb[0] - 3, bb[1] - 1, bb[2] + 3, bb[3] + 1, fill=self.th["label_bg"], outline=self.th["sel"])
                 cv.tag_lower(bg, tid)
+        self.draw_points()
         cv.create_text(4, 4, anchor="nw", text="緯度", font=("", 9), fill=self.th["axis"])
         cv.create_text(L, H - 2, anchor="sw", text="東経(°)  →東(右)", font=("", 9), fill=self.th["axis"])
         if getattr(self, "searching", False):   # 検索中は地図の中央に表示
@@ -255,24 +256,43 @@ class MapView:
         return self.cellmap.get((math.floor(lat / g), math.floor(lon / g)))
 
     def on_press(self, e):
-        self.drag = (e.x, e.y)
+        self.added_now = False
+        self.pdrag = self.point_at(e.x, e.y)   # 点の上を押したら、その点を動かす
+        self.drag = None if self.pdrag is not None else (e.x, e.y)
 
     def on_drag(self, e):
-        if self.drag:
+        if self.pdrag is not None:
+            self.move_point(e.x, e.y)
+        elif self.drag:
             self.cv.delete("rb")
             self.cv.create_rectangle(self.drag[0], self.drag[1], e.x, e.y, outline=self.th["sel"], dash=(3, 2), tags="rb")
 
     def on_release(self, e):
+        if self.pdrag is not None:
+            self.pdrag = None
+            return
         if not self.drag or not self.view:
             return
         x0, y0 = self.drag
         self.drag = None
         self.cv.delete("rb")
         if abs(e.x - x0) > 8 and abs(e.y - y0) > 8:
-            a, b = self.inv(min(x0, e.x), max(y0, e.y)), self.inv(max(x0, e.x), min(y0, e.y))
-            if b[0] > a[0] and b[1] > a[1]:
-                self.set_view(a[0], b[0], a[1], b[1])
+            # 四角で囲む: その四角を全部写している画像だけに絞る。四角は押し始めたセルの中に収める
+            (lo0, la0), (lo1, la1) = self.inv(x0, y0), self.inv(e.x, e.y)
+            cur = self.sel_row()
+            if cur is None or not self.in_row(cur, la0, lo0):
+                cur = self.cell_at(x0, y0)
+                if cur is None:
+                    self.status.set("四角は、色の付いたセルの中から囲み始めてください"); return
+                self.select(self.rows.index(cur))
+            self.set_rect(cur, lo0, la0, lo1, la1)
         else:
+            lon, lat = self.inv(e.x, e.y)
+            cur = self.sel_row()
+            if cur is not None and self.in_row(cur, lat, lon):   # 選んだセルの中のクリックは点を打つ
+                self.add_point(cur, lat, lon)
+                self.added_now = True
+                return
             r = self.cell_at(e.x, e.y)
             if r is not None:
                 idx = self.rows.index(r)
@@ -285,6 +305,9 @@ class MapView:
             return
         self.drag = None
         self.cv.delete("rb")
+        if self.added_now:   # 1回目のクリックで打った(移した)点は元に戻す
+            self.added_now = False
+            self.restore_point()
         self.select(self.rows.index(r))
         self.copy_cell()
         webbrowser.open(quickmap_url(r))
@@ -293,6 +316,7 @@ class MapView:
     def on_move(self, e):
         if not self.view or self.drag:
             return
+        self.cv.configure(cursor="fleur" if self.point_at(e.x, e.y) is not None else "")   # 点の上では移動用の矢印
         lon, lat = self.inv(e.x, e.y)
         r = self.cell_at(e.x, e.y)
         s = "緯度 %.2f° 東経 %.2f°" % (lat, lon)

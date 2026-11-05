@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """データの取得(ODE REST)・解釈・集計・ローカル保存と、ヒートマップの色。画面(tkinter)には依存しない。"""
-import csv, json, math, time, collections, os, sqlite3
+import csv, json, math, time, collections, os, sqlite3, re
 import urllib.request, urllib.parse, io, hashlib, base64
 
 
@@ -144,10 +144,14 @@ def index_solar(prod, emi, inc, pha):
     return None, None
 
 
+def product_id(f):
+    pid = (f.get("pdsid") or f.get("product_name") or f.get("productid") or f.get("ode_id") or "?")
+    return str(pid).split(".")[0].upper()   # 例: M1404462373LE.IMG → M1404462373LE
+
+
 def parse_record(prod):
     f = flat(prod)
-    pid = (f.get("pdsid") or f.get("product_name") or f.get("productid") or f.get("ode_id") or "?")
-    pid = str(pid).split(".")[0].upper()   # 例: M1404462373LE.IMG → M1404462373LE
+    pid = product_id(f)
     lat = num(f, "center_latitude", "centerlatitude")
     lon = num(f, "center_longitude", "centerlongitude")
     inc = num(f, "incidence_angle", "incidenceangle")
@@ -245,6 +249,7 @@ def db_open():
     db.execute("CREATE TABLE IF NOT EXISTS recs(id TEXT PRIMARY KEY, lat REAL, lon REAL, inc REAL, emi REAL, side TEXT, t TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS done(chunk TEXT PRIMARY KEY, n INTEGER)")
     db.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS foot(id TEXT PRIMARY KEY, wkt TEXT)")   # 画像の範囲(点で絞り込む用)
     # 取得範囲や種類コードが変わったら古い保存は使わない
     sig = "%s|%s|%s" % (CACHE_INC, CACHE_EMI, "v2")
     row = db.execute("SELECT v FROM meta WHERE k='sig'").fetchone()
@@ -291,6 +296,75 @@ def db_load(db, c):
     return [dict(id=a, lat=b, lon=c_, inc=d, emi=e, side=s, time=t)
             for a, b, c_, d, e, s, t in db.execute(
                 q, (c["latmin"], c["latmax"], c["lonmin"], c["lonmax"], c["incmin"], c["incmax"], c["emimin"], c["emimax"]))]
+
+
+# ---------------------------------------------------------------- 画像の範囲(footprint)
+# 点が写っているかを調べるために、画像の四隅の範囲をODEから取り、PC内にも保存する。
+def fetch_footprints(latmin, latmax, lonmin, lonmax, pt):
+    """範囲に掛かる画像の {画像ID: 範囲(WKT文字列)} を返す。角度は保存データと同じ範囲で取る。"""
+    cc = dict(latmin=latmin, latmax=latmax, lonmin=lonmin, lonmax=lonmax,
+              incmin=CACHE_INC[0], incmax=CACHE_INC[1], emimin=CACHE_EMI[0], emimax=CACHE_EMI[1])
+    out, off = {}, 0
+    while True:
+        p = base_params(cc, pt); p.update(limit=PAGE, offset=off)
+        prods = products_of(fetch(p))
+        for pr in prods:
+            f = flat(pr)
+            w = f.get("footprint_geometry") or f.get("footprint_c0_geometry")
+            if w:
+                out[product_id(f)] = str(w)
+        off += len(prods)
+        if len(prods) < PAGE:
+            return out
+
+
+def db_feet(db, ids):
+    ids = list(ids)
+    out = {}
+    for k in range(0, len(ids), 500):
+        part = ids[k:k + 500]
+        q = "SELECT id, wkt FROM foot WHERE id IN (%s)" % ",".join("?" * len(part))
+        out.update(db.execute(q, part).fetchall())
+    return out
+
+
+def db_save_feet(db, feet):
+    db.executemany("INSERT OR REPLACE INTO foot VALUES(?,?)", list(feet.items()))
+    db.commit()
+
+
+def parse_wkt(s):
+    """WKT の POLYGON / MULTIPOLYGON から、輪ごとの点列 [(経度, 緯度), ...] を取り出す。"""
+    rings = []
+    for part in re.findall(r"\(([^()]+)\)", s or ""):
+        pts = []
+        for xy in part.split(","):
+            a = xy.split()
+            if len(a) >= 2:
+                pts.append((float(a[0]), float(a[1])))
+        if len(pts) >= 3:
+            rings.append(pts)
+    return rings
+
+
+def unwrap(ring, lon):
+    """経度を lon の近く(±180°)に寄せる。経度0°/360°をまたぐ画像でも形が崩れないようにする。"""
+    return [(lon + ((x - lon + 180.0) % 360.0 - 180.0), y) for x, y in ring]
+
+
+def covers(rings, lat, lon):
+    """点(緯度, 経度)が範囲の中にあるか。"""
+    for ring in rings:
+        pts, inside = unwrap(ring, lon), False
+        j = len(pts) - 1
+        for i in range(len(pts)):
+            (xi, yi), (xj, yj) = pts[i], pts[j]
+            if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+                inside = not inside
+            j = i
+        if inside:
+            return True
+    return False
 
 
 def ramp(t):

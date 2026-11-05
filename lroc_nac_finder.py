@@ -6,7 +6,7 @@ LROC NAC「同じ場所を似た照明でたくさん撮った場所」探索ツ
 使い方:  python lroc_nac_finder.py   (Python 3.8以上、追加インストール不要)
   1. 欄に条件を入れて [検索]
   2. 結果は 順位表 と 地図(ヒートマップ。東が右・北が上) に出る。濃いほど撮影回数が多い
-  3. 地図: ドラッグで拡大 / クリックでそのセルを選択 / [全体表示] で戻す
+  3. 地図: クリックでそのセルを選択 / セルの中をクリック・ドラッグで点・四角を置き、そこを写す画像に絞る / [全体表示] で戻す
   4. [GeoJSON/KML書き出し] でQuickMapなどの地図に重ねるファイルを作れる
   ※ 太陽の向き: 「東=右(朝)」「西=左(夕)」(北が上の地図で見たとき)
   ※ データ元: NASA PDS Geosciences Node の ODE REST (画像の中心座標・入射角などのメタデータ)
@@ -22,10 +22,11 @@ from nac_data import (SETTINGS_PATH, STOPS, PALETTES, CACHE_PATH, CACHE_INC, CAC
                       discover_types, analyse, rng, db_open, chunks_for, fetch_chunk, db_load)
 from map_view import MapView
 from results import ResultActions
+from point_filter import PointFilter
 
 
 # ---------------------------------------------------------------- GUI
-class App(MapView, ResultActions):
+class App(MapView, ResultActions, PointFilter):
     FIELDS = [   # 3つずつ1行に並ぶ。1行に同じ項目の 最小・最大・差 をまとめる
         ("入射角 最小", "incmin", ""), ("入射角 最大", "incmax", ""), ("入射角の差(°以内)", "incdiff", "5"),
         ("エミッション角 最小", "emimin", ""), ("エミッション角 最大", "emimax", ""), ("エミッション角の差(°以内)", "emidiff", ""),
@@ -59,6 +60,7 @@ class App(MapView, ResultActions):
         self.full = None
         self.sel = None
         self.drag = None
+        self.init_points()
 
         top = ttk.Frame(root)
         top.pack(fill="x", padx=8, pady=4)
@@ -158,13 +160,15 @@ class App(MapView, ResultActions):
         self.idvar = tk.StringVar(value="")
         idrow = ttk.Frame(root)
         idrow.pack(fill="x", padx=8)
+        ttk.Button(idrow, text="点・四角を消す", command=self.clear_points).pack(side="right", padx=(6, 0))
         ttk.Button(idrow, text="IDをコピー", command=self.copy_ids).pack(side="right", padx=(6, 0))
         ttk.Button(idrow, text="セル内の全IDの画像ページを開く(ダウンロード)", command=self.open_all_products).pack(side="right", padx=(6, 0))
         ttk.Entry(idrow, textvariable=self.idvar, state="readonly").pack(side="left", fill="x", expand=True)
         # 操作ヒントは地図の状態に関係なく常に表示する
         ttk.Label(root, style="Mute.TLabel", wraplength=1200, text=(
             "地図の操作:  ホイール または ＋－キー=拡大・縮小  /  矢印キー=移動  /  Home=全体表示  /  ホイール押しながら または 右ドラッグ=移動  /  "
-            "左ドラッグ=囲んだ範囲を拡大  /  右クリック=全体表示  /  左クリック=セルを選ぶ  /  ダブルクリック=QuickMapでその場所を開く  /  順位表の行=その場所へ")
+            "右クリック=全体表示  /  左クリック=セルを選ぶ  /  選んだセルの中をクリック=点を打つ(点が写っている画像だけに絞る。点は1つで、クリックやドラッグで動かせる)  /  "
+            "セルの中を左ドラッグ=四角で囲む(四角全体を写している画像だけに絞る)  /  Delete=点・四角を消す  /  ダブルクリック=QuickMapでその場所を開く  /  順位表の行=その場所へ")
         ).pack(fill="x", padx=8, pady=(2, 0))
 
         pw = ttk.PanedWindow(root, orient="vertical")
@@ -195,6 +199,8 @@ class App(MapView, ResultActions):
         for k, d in (("<Left>", (-.2, 0)), ("<Right>", (.2, 0)), ("<Up>", (0, .2)), ("<Down>", (0, -.2))):
             self.cv.bind(k, lambda e, d=d: self.pan_by(*d))
         self.cv.bind("<Home>", lambda e: self.reset_view())
+        for k in ("<Delete>", "<BackSpace>"):
+            self.cv.bind(k, self.clear_points)
         self.cv.bind("<ButtonPress-1>", self.on_press)
         self.cv.bind("<B1-Motion>", self.on_drag)
         self.cv.bind("<ButtonRelease-1>", self.on_release)
@@ -271,6 +277,7 @@ class App(MapView, ResultActions):
         self.status.set("検索中…")
         self.tree.delete(*self.tree.get_children())
         self.rows, self.cellmap, self.sel = [], {}, None
+        self.pts, self.pt_row = [], None
         self.full = (c["lonmin"], c["lonmax"], c["latmin"], c["latmax"])
         self.set_view(*self.full)
         threading.Thread(target=self.work, args=(c, self.pt.get()), daemon=True).start()
@@ -327,6 +334,7 @@ class App(MapView, ResultActions):
                     self.btn.state(["!disabled"]); self.btn.configure(text="検索")
                     self.draw()
                 elif k == "redraw": self.bg_loading = False; self.draw()
+                elif k == "feet": self.on_feet(v)
                 elif k == "types":
                     self.ptbox.configure(values=["自動"] + list(v))
                 elif k == "rows":

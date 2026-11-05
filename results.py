@@ -6,12 +6,17 @@ import webbrowser
 from nac_data import rng, product_url, obs_ids, ramp, hexcol
 
 
+def item_ids(items):
+    return sorted({i["id"][:-2] for i in items})
+
+
 class ResultActions:
     def copy_ids(self):
         r = self.cur()
         if r:
-            self.root.clipboard_clear(); self.root.clipboard_append(" ".join(obs_ids(r)))
-            self.status.set("撮影IDをコピーしました(%d件)" % len(obs_ids(r)))
+            ids = item_ids(self.point_items(r))
+            self.root.clipboard_clear(); self.root.clipboard_append(" ".join(ids))
+            self.status.set("撮影IDをコピーしました(%d件)" % len(ids))
 
     def open_all_products(self):
         """選んだセルにある撮影IDすべての画像ページを、ブラウザのタブで順に開く。
@@ -20,7 +25,7 @@ class ResultActions:
         if not r:
             return
         pages = {}
-        for i in r["items"]:
+        for i in self.point_items(r):   # 点を打っていれば、その点を写す画像だけ
             pages.setdefault(i["id"][:-2], i["id"])     # 撮影IDごとに1ページ
         urls = [product_url(pages[k]) for k in sorted(pages)]
         if len(urls) > 8 and not messagebox.askokcancel("確認", "%d個のページを開きます。よろしいですか?" % len(urls)):
@@ -30,8 +35,9 @@ class ResultActions:
         self.status.set("%d個の画像ページを開きます(EDR/CDRのダウンロードリンクがあります)" % len(urls))
 
     def show_ids(self, r):
-        ids = obs_ids(r)
-        self.idvar.set("撮影ID(%d回): %s" % (len(ids), "  ".join(ids)))
+        ids = item_ids(self.point_items(r))
+        head = "点を写す撮影ID" if (self.pts and r is self.pt_row) else "撮影ID"
+        self.idvar.set("%s(%d回): %s" % (head, len(ids), "  ".join(ids)))
 
     def select(self, idx):
         self.sel = idx
@@ -77,7 +83,7 @@ class ResultActions:
         if not fn: return
         with open(fn, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f); w.writerow(["画像ID", "緯度", "東経", "入射角", "エミッション角", "太陽の向き", "撮影時刻", "画像ページ"])
-            for i in sorted(r["items"], key=lambda x: x["time"]):
+            for i in sorted(self.point_items(r), key=lambda x: x["time"]):
                 w.writerow([i["id"], i["lat"], i["lon"], i["inc"], i["emi"], i["side"], i["time"], product_url(i["id"])])
         self.status.set("保存しました: " + fn)
 
