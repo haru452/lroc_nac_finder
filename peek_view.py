@@ -84,7 +84,7 @@ class PeekView:
             self.status.set("このセルの重なりを表示しています(%sのまま)" % MODE_NAMES[True])
             return
         lon, lat = self.inv(px, py)
-        hits = [i["id"] for i in sorted(self.point_items(r), key=lambda i: i["id"])
+        hits = [i["id"] for i in sorted(r["items"], key=lambda i: i["id"])
                 if i["id"] in self.foot and covers(self.foot[i["id"]], lat, lon)]
         if hits:
             if add:
@@ -223,7 +223,7 @@ class PeekView:
 
     # ---- 描画
     def draw_peek(self, r):
-        """セルの画像(点・四角で絞っていればその画像)の範囲を、画像ごとの色で描き、左下に凡例を出す。
+        """セルの画像すべての範囲を、画像ごとの色で描き、左下に凡例を出す。
         クリックした場所の画像は太い線で描き、右上に詳しい情報を出す。"""
         if (any(i["id"] not in self.foot for i in r["items"])
                 and (r["iy"], r["ix"], r["g"]) not in self.foot_tried):
@@ -231,7 +231,7 @@ class PeekView:
         cv = self.cv
         L, T, R, B = self.plot_rect()
         clon = (r["ix"] + 0.5) * r["g"]
-        items = sorted(self.point_items(r), key=lambda i: i["id"])
+        items = sorted(r["items"], key=lambda i: i["id"])   # 点・四角を置いていても、セルの画像すべてを出す
         hits = [h for h in self.peek_hits if any(i["id"] == h for i in items)]
         cols, rows = {}, []
         if self.heat:   # 枠線の代わりに描く
