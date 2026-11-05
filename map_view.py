@@ -252,6 +252,8 @@ class MapView:
         return self.cellmap.get((math.floor(lat / g), math.floor(lon / g)))
 
     def on_press(self, e):
+        if not e.state & 4:
+            self.ctrl_down = False
         if self.peek:   # 重なり表示モード: 点・四角は使わず、離したときに画像の情報を出す
             self.drag = self.pdrag = None
             self.peek_press = (e.x, e.y)
@@ -271,7 +273,7 @@ class MapView:
         if self.peek:
             p, self.peek_press = getattr(self, "peek_press", None), None
             if p and abs(e.x - p[0]) <= 8 and abs(e.y - p[1]) <= 8:   # ドラッグしたときは何もしない
-                self.peek_click(e.x, e.y)
+                self.peek_click(e.x, e.y, bool(e.state & 1))
             return
         if self.pdrag is not None:
             self.pdrag = None
@@ -319,6 +321,8 @@ class MapView:
         self.status.set("QuickMapを開きました(そのセルの中心に点を置いて表示)。ずれる場合は、コピー済みの座標を座標移動欄に貼り付けてください")
 
     def on_move(self, e):
+        if not e.state & 4:   # Ctrlを離したイベントを取りこぼしても、次のCtrlで切り替えられるようにする
+            self.ctrl_down = False
         if not self.view or self.drag:
             return
         self.cv.configure(cursor="fleur" if not self.peek and self.point_at(e.x, e.y) is not None else "")   # 点の上では移動用の矢印

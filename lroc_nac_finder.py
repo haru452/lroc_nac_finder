@@ -168,7 +168,7 @@ class App(MapView, ResultActions, PointFilter, PeekView):
         ttk.Button(idrow, text="IDをコピー", command=self.copy_ids).pack(side="right", padx=(6, 0))
         ttk.Button(idrow, text="セル内の全IDの画像ページを開く(ダウンロード)", command=self.open_all_products).pack(side="right", padx=(6, 0))
         ttk.Entry(idrow, textvariable=self.idvar, state="readonly").pack(side="left", fill="x", expand=True)
-        # 操作ヒント。通常モードと重なり表示モード(Shift)で中身を切り替える(peek_view.py の HINTS)
+        # 操作ヒント。通常モードと重なり表示モード(Ctrl)で中身を切り替える(peek_view.py の HINTS)
         self.hint_var = tk.StringVar()
         ttk.Label(root, style="Mute.TLabel", wraplength=1200, textvariable=self.hint_var).pack(fill="x", padx=8, pady=(2, 0))
         self.init_peek()
@@ -201,10 +201,14 @@ class App(MapView, ResultActions, PointFilter, PeekView):
         for k, d in (("<Left>", (-.2, 0)), ("<Right>", (.2, 0)), ("<Up>", (0, .2)), ("<Down>", (0, -.2))):
             self.cv.bind(k, lambda e, d=d: self.pan_by(*d))
         self.cv.bind("<Home>", lambda e: self.reset_view())
-        for k in ("<KeyPress-Shift_L>", "<KeyPress-Shift_R>"):     # Shiftを押すたびに、画像の重なり表示を出す・消す
+        for k in ("<KeyPress-Control_L>", "<KeyPress-Control_R>"):     # Ctrlを押すたびに、画像の重なり表示を出す・消す
             self.cv.bind(k, self.peek_toggle)
-        for k in ("<KeyRelease-Shift_L>", "<KeyRelease-Shift_R>", "<FocusOut>"):
-            self.cv.bind(k, self.shift_up)
+        for k in ("<KeyRelease-Control_L>", "<KeyRelease-Control_R>", "<FocusOut>"):
+            self.cv.bind(k, self.ctrl_up)
+        for k in ("<Key-1>", "<KP_1>"):   # 重なり表示モード: 選んだ画像の入手ページを開く
+            self.cv.bind(k, self.peek_open)
+        for k in ("<Key-2>", "<KP_2>"):   # 重なり表示モード: ヒートマップ
+            self.cv.bind(k, self.heat_toggle)
         for k in ("<Delete>", "<BackSpace>"):
             self.cv.bind(k, self.clear_points)
         self.cv.bind("<ButtonPress-1>", self.on_press)

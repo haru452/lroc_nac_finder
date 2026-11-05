@@ -59,12 +59,14 @@ class PointFilter:
     def add_point(self, r, lat, lon):
         """点を打つ。すでに点があれば、クリックした場所へ移す。"""
         self.prev_pt = (self.pts, self.pt_row, self.rect)
+        self.heat, self.heat_saved = False, None   # 点を打ったらヒートマップは消す(外していた点・四角は捨てる)
         self.pts, self.pt_row, self.rect = [(lat, lon)], r, None
         self.load_feet(r)
         self.refresh_points()
 
     def set_rect(self, r, lon0, lat0, lon1, lat1):
         """四角で囲む。四角はセルの中に収める。"""
+        self.heat, self.heat_saved = False, None   # 四角を囲んだらヒートマップは消す
         g, eps = r["g"], r["g"] * 1e-6
         lon0, lon1 = (min(max(v, r["ix"] * g), (r["ix"] + 1) * g - eps) for v in (min(lon0, lon1), max(lon0, lon1)))
         lat0, lat1 = (min(max(v, r["iy"] * g), (r["iy"] + 1) * g - eps) for v in (min(lat0, lat1), max(lat0, lat1)))
@@ -98,6 +100,7 @@ class PointFilter:
         self.refresh_points()
 
     def clear_points(self, _e=None):
+        self.heat_saved = None   # ヒートマップのために外していた点・四角も、Deleteで捨てる
         if self.pts:
             self.pts, self.rect = [], None
             self.refresh_points()
@@ -163,6 +166,9 @@ class PointFilter:
         """点と、点を写している画像の範囲を地図に描く。重なり表示モードでは、画像の重なりを描く(peek_view.py)。"""
         if self.peek and self.sel_row() is not None:
             self.draw_peek(self.sel_row())
+            return
+        if self.heat and not self.peek and self.sel_row() is not None:   # 通常モードのヒートマップ(peek_view.py)
+            self.draw_heat_normal(self.sel_row())
             return
         r = self.pt_row
         if not self.pts or r is None or self.sel_row() is not r:
