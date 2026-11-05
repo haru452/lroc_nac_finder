@@ -155,16 +155,11 @@ class MapView:
         key = (self.view, w, h, round(self.alpha.get(), 2), id(self.cellmap), len(self.cellmap), self.palette.get())
         if self.bg_cache and self.bg_cache[0] == key:
             return self.bg_cache[1]
-        img, missing = bp.base(self.view, w, h)
-        if missing and not self.bg_loading:
-            self.bg_loading = True
-
-            def run():
-                bad = bp.download(missing)
-                if bad:
-                    self.q.put(("status", "月面写真のタイルを %d 枚取得できませんでした(ネット接続を確認してください)" % bad))
-                self.q.put(("redraw", None))
-            threading.Thread(target=run, daemon=True).start()
+        img, missing, ahead = bp.base(self.view, w, h)
+        if (missing or ahead) and (missing, ahead) != self.bg_asked:
+            # 中心に近いタイルから裏で取得し、1枚届くごとに描き直す(届くまでは粗いタイルで仮表示)
+            self.bg_asked = (missing, ahead)
+            bp.request(missing + ahead, lambda ok: self.q.put(("tile", ok)))
         img = bp.with_heat(img, self.view, list(self.cellmap.values()), ramp, self.alpha.get())
         photo = bp.to_photo(img)
         if not missing:

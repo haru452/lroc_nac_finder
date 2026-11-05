@@ -128,7 +128,7 @@ class App(MapView, ResultActions, PointFilter):
         ttk.Checkbutton(mbox, text="ダークモード", variable=self.dark, command=self.on_theme).pack(
             fill="x", padx=4, pady=(0, 4))
         self.bg_cache = None      # (条件, 合成した画像) 選択だけ変えたときに作り直さないため
-        self.bg_loading = False   # 月面タイルを取得中か
+        self.bg_asked = None      # 最後に取得を頼んだタイル(同じ頼みを繰り返さない)
 
         bar2 = ttk.LabelFrame(top, text="保存・書き出し")
         bar2.pack(side="left", fill="y")
@@ -212,6 +212,8 @@ class App(MapView, ResultActions, PointFilter):
         self.cv.bind("<ButtonPress-2>", self.on_rpress)       # ホイールを押しながら動かしても移動(クリックだけでは何もしない)
         self.cv.bind("<B2-Motion>", self.on_rdrag)
         self.cv.bind("<ButtonRelease-2>", lambda e: setattr(self, "pan", None))
+        self.load_settings()
+        root.protocol("WM_DELETE_WINDOW", self.on_close)   # 閉じるときに条件と表示の設定を保存する
         root.after(150, self.poll)
         threading.Thread(target=self.load_types, daemon=True).start()
 
@@ -271,6 +273,7 @@ class App(MapView, ResultActions, PointFilter):
             c = self.conds()
         except ValueError as e:
             messagebox.showerror("入力エラー", str(e)); return
+        self.save_settings()   # 検索した条件は、その時点で保存しておく
         self.stop = False
         self.searching = True
         self.btn.state(["disabled"]); self.btn.configure(text="検索中…")
@@ -325,6 +328,7 @@ class App(MapView, ResultActions, PointFilter):
             self.q.put(("done", None))
 
     def poll(self):
+        redraw, tile_bad = False, 0
         try:
             while True:
                 k, v = self.q.get_nowait()
@@ -333,7 +337,9 @@ class App(MapView, ResultActions, PointFilter):
                     self.searching = False
                     self.btn.state(["!disabled"]); self.btn.configure(text="検索")
                     self.draw()
-                elif k == "redraw": self.bg_loading = False; self.draw()
+                elif k == "tile":   # 月面タイルが届いた: まとめて1回だけ描き直す
+                    redraw = True
+                    tile_bad += not v
                 elif k == "feet": self.on_feet(v)
                 elif k == "types":
                     self.ptbox.configure(values=["自動"] + list(v))
@@ -354,6 +360,11 @@ class App(MapView, ResultActions, PointFilter):
                         self.draw()
         except queue.Empty:
             pass
+        if tile_bad:
+            self.status.set("月面写真のタイルを %d 枚取得できませんでした(ネット接続を確認してください)" % tile_bad)
+        if redraw and self.view:
+            self.bg_asked = None
+            self.draw()
         self.root.after(150, self.poll)
 
     def toggle_top(self):
@@ -385,12 +396,47 @@ class App(MapView, ResultActions, PointFilter):
         for lab in self.hints:
             lab.configure(bg=self.th["field"], fg=self.th["hint"])
         self.cv.configure(bg=self.th["canvas"], highlightbackground=self.th["outline"])
-        try:
-            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-                json.dump({"dark": self.dark.get()}, f)
-        except OSError:
-            pass
+        self.save_settings()
         self.draw()
+
+    def settings_vars(self):
+        """保存する項目: 検索の条件と、地図(ヒートマップ)の表示の設定。"""
+        d = {"field_" + k: v for k, v in self.v.items()}
+        d.update(side=self.side, pt=self.pt, equator=self.equator, eqw=self.eqw, dark=self.dark,
+                 bg_on=self.bg_on, alpha=self.alpha, palette=self.palette, names_on=self.names_on)
+        return d
+
+    def load_settings(self):
+        """前回の条件と表示の設定を戻す。読めない項目はとばして初期値のままにする。"""
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return
+        for k, var in self.settings_vars().items():
+            if k not in saved or k == "dark":   # ダークモードは起動の最初に反映済み
+                continue
+            try:
+                if k == "palette" and saved[k] not in PALETTES:
+                    continue
+                if k == "bg_on" and not bp.OK:
+                    continue
+                var.set(saved[k])
+            except (tk.TclError, TypeError, ValueError):
+                pass
+        STOPS[:] = PALETTES[self.palette.get()]
+
+    def save_settings(self):
+        try:
+            d = {k: var.get() for k, var in self.settings_vars().items()}
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=1)
+        except (OSError, tk.TclError):
+            pass
+
+    def on_close(self):
+        self.save_settings()
+        self.root.destroy()
 
     def on_palette(self, _e=None):
         STOPS[:] = PALETTES[self.palette.get()]

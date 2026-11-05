@@ -4,9 +4,10 @@
 
 - 画像の出どころ: NASA Moon Trek のタイル (WMTS, 緯度経度が等間隔の地図, 経度 -180〜180, 北が上)
 - タイルは tile_cache/ に保存するので、2回目からはネットを使わない
+- QuickMap のように、細かいタイルが届くまでは手元の粗いタイルを引き伸ばして見せ、届いたタイルから順に差し替える
 - Pillow (pip install pillow) が入っていないと使えない。無い場合 OK=False になり、呼び出し側は背景なしで動く
 """
-import os, math, threading, concurrent.futures, urllib.request
+import os, math, threading, urllib.request
 
 try:
     from PIL import Image, ImageDraw, ImageTk
@@ -53,25 +54,69 @@ def _tile(k):
     return im
 
 
-def download(keys, workers=8):
-    """タイルをまとめて取得して保存する。失敗した数を返す。"""
-    os.makedirs(DIR, exist_ok=True)
+def _download_one(k):
+    """タイルを1枚取得して保存する。成功なら True。"""
+    try:
+        req = urllib.request.Request(URL % k, headers={"User-Agent": "lroc-nac-finder/2.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = r.read()
+        tmp = "%s.%d.part" % (_path(k), threading.get_ident())
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, _path(k))
+        return True
+    except Exception:  # noqa
+        _failed.add(k)
+        return False
 
-    def one(k):
-        try:
-            req = urllib.request.Request(URL % k, headers={"User-Agent": "lroc-nac-finder/2.0"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                data = r.read()
-            tmp = _path(k) + ".part"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, _path(k))
-            return 0
-        except Exception:  # noqa
-            _failed.add(k)
-            return 1
-    with concurrent.futures.ThreadPoolExecutor(workers) as ex:
-        return sum(ex.map(one, keys))
+
+# ---- 取得の順番待ち。新しい表示範囲の要求で丸ごと置き換えるので、通り過ぎた場所のタイルは取らない
+WORKERS = 8
+_pending = []        # これから取るタイル(先頭から順に)
+_inflight = set()    # 取得中のタイル
+_running = [0]       # 動いている取得スレッドの数
+
+
+def request(keys, done):
+    """keys のタイルを先頭から順に裏で取得する。前の要求のうち、まだ始めていないものは捨てる。
+    1枚届くごとに done(成功したか) を呼ぶ(裏のスレッドから呼ばれる)。"""
+    os.makedirs(DIR, exist_ok=True)
+    with _lock:
+        _pending[:] = [k for k in dict.fromkeys(keys) if k not in _inflight]
+        start = min(WORKERS - _running[0], len(_pending))
+        _running[0] += start
+
+    def worker():
+        while True:
+            with _lock:
+                if not _pending:
+                    _running[0] -= 1
+                    return
+                k = _pending.pop(0)
+                _inflight.add(k)
+            ok = os.path.exists(_path(k)) or _download_one(k)
+            with _lock:
+                _inflight.discard(k)
+            done(ok)
+    for _ in range(start):
+        threading.Thread(target=worker, daemon=True).start()
+
+
+def _fallback(k, depth=6):
+    """まだ無いタイルの代わりに、手元にある粗いタイルの該当部分を引き伸ばして返す。無ければ None。"""
+    z, r, c = k
+    for d in range(1, min(depth, z) + 1):
+        p = _tile((z - d, r >> d, c >> d))
+        if p is None:
+            continue
+        if p.size != (TS, TS):
+            p = p.resize((TS, TS))
+        s = TS >> d                  # 粗いタイルの中で、このタイルに当たる部分の大きさ(画素)
+        if s < 1:
+            return None
+        x, y = (c % (1 << d)) * s, (r % (1 << d)) * s
+        return p.crop((x, y, x + s, y + s)).resize((TS, TS), Image.BILINEAR)
+    return None
 
 
 def _plan(view, w, h):
@@ -92,12 +137,14 @@ def _plan(view, w, h):
 
 
 def base(view, w, h):
-    """表示範囲の月面画像 (w×h) を作る。戻り値: (画像, 足りないタイルのリスト)。
-    足りないタイルは灰色のまま。download() で取ってから、もう一度呼ぶ。"""
+    """表示範囲の月面画像 (w×h) を作る。戻り値: (画像, 足りないタイル, 周りの先読みタイル)。
+    足りないタイルは粗いタイルで仮に埋める(それも無ければ灰色)。request() で取ってから、もう一度呼ぶ。
+    足りないタイルは画面の中心に近い順に並べる。"""
     x0, x1, y0, y1 = view
     z, n, step, u0, u1, r0, r1 = _plan(view, w, h)
     mos = Image.new("RGB", ((u1 - u0) * TS, (r1 - r0) * TS), (60, 60, 60))
     missing = []
+    cu, cr = (x0 + x1) / 2 / step, (90 - (y0 + y1) / 2) / step   # 画面の中心(タイル単位)
     for u in range(u0, u1):
         c = (u + n // 2) % n          # 東経0〜360 の列番号 → タイルの列番号 (経度-180始まり)
         for r in range(r0, r1):
@@ -106,7 +153,10 @@ def base(view, w, h):
                 continue
             t = _tile(k)
             if t is None:
-                missing.append(k)
+                missing.append(((u + 0.5 - cu) ** 2 + (r + 0.5 - cr) ** 2, k))
+                t = _fallback(k)
+                if t is not None:
+                    mos.paste(t, ((u - u0) * TS, (r - r0) * TS))
                 continue
             if t.size != (TS, TS):
                 t = t.resize((TS, TS))
@@ -114,7 +164,16 @@ def base(view, w, h):
     box = ((x0 - u0 * step) / step * TS, (90 - y1 - r0 * step) / step * TS,
            (x1 - u0 * step) / step * TS, (90 - y0 - r0 * step) / step * TS)
     box = (max(0, box[0]), max(0, box[1]), min(mos.width, box[2]), min(mos.height, box[3]))
-    return mos.resize((w, h), Image.BILINEAR, box=box), missing
+    # 先読み: 表示範囲のすぐ外側1列のタイル(少し動かしたときにすぐ出るように)
+    ahead = []
+    for u in range(u0 - 1, u1 + 1):
+        for r in range(r0 - 1, r1 + 1):
+            if (u0 <= u < u1 and r0 <= r < r1) or not 0 <= r < n // 2:
+                continue
+            k = (z, r, (u + n // 2) % n)
+            if k not in _failed and k not in _mem and not os.path.exists(_path(k)):
+                ahead.append(k)
+    return mos.resize((w, h), Image.BILINEAR, box=box), [k for _, k in sorted(missing)], ahead
 
 
 def with_heat(img, view, cells, ramp, alpha):
