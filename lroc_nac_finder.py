@@ -19,21 +19,25 @@ import moon_basemap as bp   # 月面の背景地図 (Pillow が無ければ背�
 import ui_theme as ut      # ライト/ダークの配色
 import place_names as pn   # 地名(静かの海など)
 from nac_data import (SETTINGS_PATH, STOPS, PALETTES, CACHE_PATH, CACHE_INC, CACHE_EMI, WORKERS,
-                      discover_types, analyse, rng, db_open, chunks_for, fetch_chunk, db_load)
+                      discover_types, analyse, rng, rng_m, db_open, chunks_for, fetch_chunk, db_load,
+                      uses_res, done_chunks, db_save_chunk)
 from map_view import MapView
 from results import ResultActions
 from point_filter import PointFilter
+from peek_view import PeekView
 
 
 # ---------------------------------------------------------------- GUI
-class App(MapView, ResultActions, PointFilter):
+class App(MapView, ResultActions, PointFilter, PeekView):
     FIELDS = [   # 3つずつ1行に並ぶ。1行に同じ項目の 最小・最大・差 をまとめる
         ("入射角 最小", "incmin", ""), ("入射角 最大", "incmax", ""), ("入射角の差(°以内)", "incdiff", "5"),
         ("エミッション角 最小", "emimin", ""), ("エミッション角 最大", "emimax", ""), ("エミッション角の差(°以内)", "emidiff", ""),
         ("緯度 最小", "latmin", ""), ("緯度 最大", "latmax", ""), ("グリッド(°)", "grid", "0.5"),
         ("経度 最小", "lonmin", ""), ("経度 最大", "lonmax", ""), ("最小撮影回数", "minobs", "3"),
+        ("ピクセルスケール 最小(m)", "resmin", ""), ("ピクセルスケール 最大(m)", "resmax", ""),
     ]
     OPTIONAL = {"latmin": -90.0, "latmax": 90.0, "lonmin": 0.0, "lonmax": 360.0, "emidiff": math.inf,
+                "resmin": 0.0, "resmax": math.inf,
                 "incmin": CACHE_INC[0], "incmax": CACHE_INC[1], "emimin": CACHE_EMI[0], "emimax": CACHE_EMI[1]}
     ML, MR, MT, MB = 46, 14, 22, 24  # 地図の余白
 
@@ -81,7 +85,7 @@ class App(MapView, ResultActions, PointFilter):
         ttk.Combobox(frm, textvariable=self.side, width=10, state="readonly",
                      values=["両方", "東(右・朝)", "西(左・夕)"]).grid(row=r, column=1, sticky="w", padx=4)
         ttk.Label(frm, style="Mute.TLabel", justify="left", text=(
-            "空欄 = 制限なし(緯度・経度は月全体、入射角は40〜80°、エミッション角は0〜10°、エミッション角の差は問わない)\n"
+            "空欄 = 制限なし(緯度・経度は月全体、入射角は40〜80°、エミッション角は0〜10°、エミッション角の差とピクセルスケールは問わない)\n"
             "差 = セル内の画像を1枚ずつ基準にして、そこから何度以内の画像を同じ条件とみなすか")
         ).grid(row=r + 1, column=0, columnspan=6, sticky="w", padx=4, pady=(2, 0))
         ttk.Label(frm, text="画像の種類コード").grid(row=r, column=2, sticky="e", padx=4)
@@ -164,25 +168,23 @@ class App(MapView, ResultActions, PointFilter):
         ttk.Button(idrow, text="IDをコピー", command=self.copy_ids).pack(side="right", padx=(6, 0))
         ttk.Button(idrow, text="セル内の全IDの画像ページを開く(ダウンロード)", command=self.open_all_products).pack(side="right", padx=(6, 0))
         ttk.Entry(idrow, textvariable=self.idvar, state="readonly").pack(side="left", fill="x", expand=True)
-        # 操作ヒントは地図の状態に関係なく常に表示する
-        ttk.Label(root, style="Mute.TLabel", wraplength=1200, text=(
-            "地図の操作:  ホイール または ＋－キー=拡大・縮小  /  矢印キー=移動  /  Home=全体表示  /  ホイール押しながら または 右ドラッグ=移動  /  "
-            "右クリック=全体表示  /  左クリック=セルを選ぶ  /  選んだセルの中をクリック=点を打つ(点が写っている画像だけに絞る。点は1つで、クリックやドラッグで動かせる)  /  "
-            "セルの中を左ドラッグ=四角で囲む(四角全体を写している画像だけに絞る)  /  Delete=点・四角を消す  /  ダブルクリック=QuickMapでその場所を開く  /  順位表の行=その場所へ")
-        ).pack(fill="x", padx=8, pady=(2, 0))
+        # 操作ヒント。通常モードと重なり表示モード(Shift)で中身を切り替える(peek_view.py の HINTS)
+        self.hint_var = tk.StringVar()
+        ttk.Label(root, style="Mute.TLabel", wraplength=1200, textvariable=self.hint_var).pack(fill="x", padx=8, pady=(2, 0))
+        self.init_peek()
 
         pw = ttk.PanedWindow(root, orient="vertical")
         pw.pack(fill="both", expand=True, padx=8, pady=4)
         self.cv = tk.Canvas(pw, bg=self.th["canvas"], height=560, highlightthickness=1, highlightbackground=self.th["outline"])
         pw.add(self.cv, weight=6)
-        cols = ("rank", "lat", "lon", "side", "inc", "emi", "obs", "n", "total")
-        heads = ("順位", "緯度(中心)", "東経(中心)", "太陽の向き", "入射角", "エミッション角", "撮影回数", "画像枚数", "セル内の全枚数")
+        cols = ("rank", "lat", "lon", "side", "inc", "emi", "res", "obs", "n", "total")
+        heads = ("順位", "緯度(中心)", "東経(中心)", "太陽の向き", "入射角", "エミッション角", "ピクセルスケール", "撮影回数", "画像枚数", "セル内の全枚数")
         tf = ttk.Frame(pw)
         pw.add(tf, weight=1)
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=5)
         for c_, h in zip(cols, heads):
             self.tree.heading(c_, text=h, command=lambda k=c_: self.sort_tree(k))   # 見出しクリックで並べ替え
-            self.tree.column(c_, width={"rank": 55, "total": 130, "inc": 110, "emi": 110}.get(c_, 95), anchor="center")
+            self.tree.column(c_, width={"rank": 55, "total": 130, "inc": 110, "emi": 110, "res": 120}.get(c_, 95), anchor="center")
         sb = ttk.Scrollbar(tf, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -199,6 +201,10 @@ class App(MapView, ResultActions, PointFilter):
         for k, d in (("<Left>", (-.2, 0)), ("<Right>", (.2, 0)), ("<Up>", (0, .2)), ("<Down>", (0, -.2))):
             self.cv.bind(k, lambda e, d=d: self.pan_by(*d))
         self.cv.bind("<Home>", lambda e: self.reset_view())
+        for k in ("<KeyPress-Shift_L>", "<KeyPress-Shift_R>"):     # Shiftを押すたびに、画像の重なり表示を出す・消す
+            self.cv.bind(k, self.peek_toggle)
+        for k in ("<KeyRelease-Shift_L>", "<KeyRelease-Shift_R>", "<FocusOut>"):
+            self.cv.bind(k, self.shift_up)
         for k in ("<Delete>", "<BackSpace>"):
             self.cv.bind(k, self.clear_points)
         self.cv.bind("<ButtonPress-1>", self.on_press)
@@ -235,7 +241,7 @@ class App(MapView, ResultActions, PointFilter):
                 else:
                     c[key] = float(s)
         except ValueError:
-            raise ValueError("数値でない欄があります(空欄にできるのは、緯度・経度・角度の最小最大・エミッション角の差の欄です)")
+            raise ValueError("数値でない欄があります(空欄にできるのは、緯度・経度・角度とピクセルスケールの最小最大・エミッション角の差の欄です)")
         c["minobs"] = int(c["minobs"])
         if self.equator.get():   # 赤道付近だけ: 緯度の欄より優先して ±幅 に絞る
             try:
@@ -253,7 +259,10 @@ class App(MapView, ResultActions, PointFilter):
             raise ValueError("角度の差は0以上にしてください")
         if c["grid"] <= 0:
             raise ValueError("グリッドは0より大きくしてください")
-        if c["latmin"] >= c["latmax"] or c["lonmin"] >= c["lonmax"] or c["incmin"] > c["incmax"] or c["emimin"] > c["emimax"]:
+        if c["resmin"] < 0:
+            raise ValueError("ピクセルスケールは0以上にしてください")
+        if (c["latmin"] >= c["latmax"] or c["lonmin"] >= c["lonmax"] or c["incmin"] > c["incmax"]
+                or c["emimin"] > c["emimax"] or c["resmin"] > c["resmax"]):
             raise ValueError("最小は最大より小さくしてください")
         return c
 
@@ -289,11 +298,12 @@ class App(MapView, ResultActions, PointFilter):
         try:
             db = db_open()
             need = chunks_for(c)
-            done = {r[0] for r in db.execute("SELECT chunk FROM done")}
+            done = done_chunks(db, c)
             todo = [k for k in need if "%d,%d" % k not in done]
             if todo:
                 pt = self.get_pt(ptval)
-                self.q.put(("status", "初回のみ取得します: %d / %d 区画が未保存(保存先 %s)" % (len(todo), len(need), CACHE_PATH)))
+                what = "ピクセルスケールの情報が無い区画を取り直します(初回のみ)" if uses_res(c) else "初回のみ取得します"
+                self.q.put(("status", "%s: %d / %d 区画が未保存(保存先 %s)" % (what, len(todo), len(need), CACHE_PATH)))
                 t0, finished = time.time(), 0
                 with concurrent.futures.ThreadPoolExecutor(WORKERS) as ex:
                     futs = {ex.submit(fetch_chunk, la, lo, pt, lambda: self.stop): (la, lo) for la, lo in todo}
@@ -302,9 +312,7 @@ class App(MapView, ResultActions, PointFilter):
                         rows = fu.result()
                         if rows is None:    # 中止された区画は保存しない(次回やり直し)
                             continue
-                        db.executemany("INSERT OR REPLACE INTO recs VALUES(?,?,?,?,?,?,?)", rows)
-                        db.execute("INSERT OR REPLACE INTO done VALUES(?,?)", ("%d,%d" % (la, lo), len(rows)))
-                        db.commit()
+                        db_save_chunk(db, la, lo, rows)
                         finished += 1
                         el = time.time() - t0
                         eta = el / finished * (len(todo) - finished)
@@ -312,7 +320,7 @@ class App(MapView, ResultActions, PointFilter):
                                     % (finished + len(need) - len(todo), len(need), la, lo, len(rows), eta / 60 + 0.5)))
                         if self.stop:
                             for f in futs: f.cancel()
-            done = {r[0] for r in db.execute("SELECT chunk FROM done")}
+            done = done_chunks(db, c)
             missing = [k for k in need if "%d,%d" % k not in done]
             self.q.put(("status", "検索中… 保存データから条件に合う画像を集計しています"))
             recs = db_load(db, c)
@@ -353,7 +361,8 @@ class App(MapView, ResultActions, PointFilter):
                     for i, r in enumerate(v[:2000], 1):
                         self.tree.insert("", "end", iid=str(i - 1), values=(
                             i, "%.2f" % r["lat"], "%.2f" % r["lon"], r["side"],
-                            rng(r["inc0"], r["inc1"]), rng(r["emi0"], r["emi1"]), r["obs"], r["n"], r["total"]))
+                            rng(r["inc0"], r["inc1"]), rng(r["emi0"], r["emi1"]), rng_m(r["res0"], r["res1"]),
+                            r["obs"], r["n"], r["total"]))
                     if v:   # 経度に引き伸ばされないよう、1位のセルを中心に縦横比どおりの範囲で見せる
                         self.fit_view(v[0]["lon"])
                     else:

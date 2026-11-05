@@ -160,7 +160,10 @@ class PointFilter:
         self.draw()
 
     def draw_points(self):
-        """点と、点を写している画像の範囲を地図に描く。"""
+        """点と、点を写している画像の範囲を地図に描く。重なり表示モードでは、画像の重なりを描く(peek_view.py)。"""
+        if self.peek and self.sel_row() is not None:
+            self.draw_peek(self.sel_row())
+            return
         r = self.pt_row
         if not self.pts or r is None or self.sel_row() is not r:
             return

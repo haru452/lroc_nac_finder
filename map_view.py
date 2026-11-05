@@ -104,6 +104,7 @@ class MapView:
                 bg = cv.create_rectangle(bb[0] - 3, bb[1] - 1, bb[2] + 3, bb[3] + 1, fill=self.th["label_bg"], outline=self.th["sel"])
                 cv.tag_lower(bg, tid)
         self.draw_points()
+        self.draw_mode()
         cv.create_text(4, 4, anchor="nw", text="緯度", font=("", 9), fill=self.th["axis"])
         cv.create_text(L, H - 2, anchor="sw", text="東経(°)  →東(右)", font=("", 9), fill=self.th["axis"])
         if getattr(self, "searching", False):   # 検索中は地図の中央に表示
@@ -251,6 +252,10 @@ class MapView:
         return self.cellmap.get((math.floor(lat / g), math.floor(lon / g)))
 
     def on_press(self, e):
+        if self.peek:   # 重なり表示モード: 点・四角は使わず、離したときに画像の情報を出す
+            self.drag = self.pdrag = None
+            self.peek_press = (e.x, e.y)
+            return
         self.added_now = False
         self.pdrag = self.point_at(e.x, e.y)   # 点の上を押したら、その点を動かす
         self.drag = None if self.pdrag is not None else (e.x, e.y)
@@ -263,6 +268,11 @@ class MapView:
             self.cv.create_rectangle(self.drag[0], self.drag[1], e.x, e.y, outline=self.th["sel"], dash=(3, 2), tags="rb")
 
     def on_release(self, e):
+        if self.peek:
+            p, self.peek_press = getattr(self, "peek_press", None), None
+            if p and abs(e.x - p[0]) <= 8 and abs(e.y - p[1]) <= 8:   # ドラッグしたときは何もしない
+                self.peek_click(e.x, e.y)
+            return
         if self.pdrag is not None:
             self.pdrag = None
             return
@@ -311,7 +321,7 @@ class MapView:
     def on_move(self, e):
         if not self.view or self.drag:
             return
-        self.cv.configure(cursor="fleur" if self.point_at(e.x, e.y) is not None else "")   # 点の上では移動用の矢印
+        self.cv.configure(cursor="fleur" if not self.peek and self.point_at(e.x, e.y) is not None else "")   # 点の上では移動用の矢印
         lon, lat = self.inv(e.x, e.y)
         r = self.cell_at(e.x, e.y)
         s = "緯度 %.2f° 東経 %.2f°" % (lat, lon)

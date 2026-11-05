@@ -82,9 +82,9 @@ class ResultActions:
         fn = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="nac_cell.csv")
         if not fn: return
         with open(fn, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f); w.writerow(["画像ID", "緯度", "東経", "入射角", "エミッション角", "太陽の向き", "撮影時刻", "画像ページ"])
+            w = csv.writer(f); w.writerow(["画像ID", "緯度", "東経", "入射角", "エミッション角", "ピクセルスケール(m)", "太陽の向き", "撮影時刻", "画像ページ"])
             for i in sorted(self.point_items(r), key=lambda x: x["time"]):
-                w.writerow([i["id"], i["lat"], i["lon"], i["inc"], i["emi"], i["side"], i["time"], product_url(i["id"])])
+                w.writerow([i["id"], i["lat"], i["lon"], i["inc"], i["emi"], i.get("res"), i["side"], i["time"], product_url(i["id"])])
         self.status.set("保存しました: " + fn)
 
     def save_all(self):
@@ -92,9 +92,9 @@ class ResultActions:
         fn = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="nac_ranking.csv")
         if not fn: return
         with open(fn, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f); w.writerow(["順位", "緯度", "東経", "太陽の向き", "入射角下限", "入射角上限", "エミッション角下限", "エミッション角上限", "撮影回数", "枚数", "セル内全枚数", "撮影ID"])
+            w = csv.writer(f); w.writerow(["順位", "緯度", "東経", "太陽の向き", "入射角下限", "入射角上限", "エミッション角下限", "エミッション角上限", "ピクセルスケール下限(m)", "ピクセルスケール上限(m)", "撮影回数", "枚数", "セル内全枚数", "撮影ID"])
             for i, r in enumerate(self.rows, 1):
-                w.writerow([i, r["lat"], r["lon"], r["side"], r["inc0"], r["inc1"], r["emi0"], r["emi1"], r["obs"], r["n"], r["total"], " ".join(obs_ids(r))])
+                w.writerow([i, r["lat"], r["lon"], r["side"], r["inc0"], r["inc1"], r["emi0"], r["emi1"], r.get("res0"), r.get("res1"), r["obs"], r["n"], r["total"], " ".join(obs_ids(r))])
         self.status.set("保存しました: " + fn)
 
     def export(self, kind):

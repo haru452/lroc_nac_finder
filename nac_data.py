@@ -157,6 +157,7 @@ def parse_record(prod):
     inc = num(f, "incidence_angle", "incidenceangle")
     emi = num(f, "emission_angle", "emissionangle")
     pha = num(f, "phase_angle", "phaseangle")
+    res = num(f, "map_resolution", "mapresolution")   # ピクセルスケール(m/画素)
     # 注意: ODEの Solar_longitude は季節(Ls)で、太陽直下点の経度ではない
     ssl = num(f, "sub_solar_longitude", "subsolarlongitude")
     saz = num(f, "sub_solar_azimuth", "subsolarazimuth")
@@ -170,7 +171,7 @@ def parse_record(prod):
         d = ((ssl % 360.0) - lon + 180.0) % 360.0 - 180.0
         side = "東(右・朝)" if d > 0 else "西(左・夕)"
     # 太陽方位角(saz)は画像の向き基準で東西どちらでも170°前後になるため、東西判定には使わない
-    return dict(id=str(pid), lat=lat, lon=lon, inc=inc, emi=emi, side=side or "不明",
+    return dict(id=str(pid), lat=lat, lon=lon, inc=inc, emi=emi, side=side or "不明", res=res,
                 time=str(f.get("observation_time") or f.get("start_time") or f.get("product_creation_time") or ""))
 
 
@@ -212,8 +213,9 @@ def analyse(recs, c):
             continue
         inc0, inc1 = span(i["inc"] for i in items)
         emi0, emi1 = span(i["emi"] for i in items)
+        res0, res1 = span(i.get("res") for i in items)
         rows.append(dict(iy=iy, ix=ix, g=g, lat=(iy + .5) * g, lon=(ix + .5) * g, side=side,
-                         inc0=inc0, inc1=inc1, emi0=emi0, emi1=emi1, obs=obs, n=len(items),
+                         inc0=inc0, inc1=inc1, emi0=emi0, emi1=emi1, res0=res0, res1=res1, obs=obs, n=len(items),
                          total=len(all_items), items=items))
     rows.sort(key=lambda r: (-r["obs"], -r["n"]))
     return rows
@@ -222,6 +224,11 @@ def analyse(recs, c):
 def rng(a, b):
     """角度の範囲を '52.1〜54.8°' の形にする。"""
     return "-" if a is None else "%.1f〜%.1f°" % (a, b)
+
+
+def rng_m(a, b):
+    """ピクセルスケールの範囲を '0.84〜1.20m' の形にする。"""
+    return "-" if a is None else "%.2f〜%.2fm" % (a, b)
 
 
 def product_url(image_id):
@@ -250,6 +257,11 @@ def db_open():
     db.execute("CREATE TABLE IF NOT EXISTS done(chunk TEXT PRIMARY KEY, n INTEGER)")
     db.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS foot(id TEXT PRIMARY KEY, wkt TEXT)")   # 画像の範囲(点で絞り込む用)
+    # ピクセルスケールは後から加えた項目。前からある保存は消さずに列を足し、
+    # ピクセルスケールで絞るときだけ、その区画を取り直して埋める(取り直した区画は done_res に記録)
+    if "res" not in [r[1] for r in db.execute("PRAGMA table_info(recs)")]:
+        db.execute("ALTER TABLE recs ADD COLUMN res REAL")
+    db.execute("CREATE TABLE IF NOT EXISTS done_res(chunk TEXT PRIMARY KEY)")
     # 取得範囲や種類コードが変わったら古い保存は使わない
     sig = "%s|%s|%s" % (CACHE_INC, CACHE_EMI, "v2")
     row = db.execute("SELECT v FROM meta WHERE k='sig'").fetchone()
@@ -258,6 +270,26 @@ def db_open():
     db.execute("INSERT OR REPLACE INTO meta VALUES('sig',?)", (sig,))
     db.commit()
     return db
+
+
+def uses_res(c):
+    """ピクセルスケールで絞り込む条件か。"""
+    return c.get("resmin", 0.0) > 0 or c.get("resmax", math.inf) < math.inf
+
+
+def done_chunks(db, c):
+    """この条件で使える、保存済みの区画。ピクセルスケールで絞るときは、それも入っている区画だけ。"""
+    done = {r[0] for r in db.execute("SELECT chunk FROM done")}
+    if uses_res(c):
+        done &= {r[0] for r in db.execute("SELECT chunk FROM done_res")}
+    return done
+
+
+def db_save_chunk(db, la, lo, rows):
+    db.executemany("INSERT OR REPLACE INTO recs(id,lat,lon,inc,emi,side,t,res) VALUES(?,?,?,?,?,?,?,?)", rows)
+    db.execute("INSERT OR REPLACE INTO done VALUES(?,?)", ("%d,%d" % (la, lo), len(rows)))
+    db.execute("INSERT OR REPLACE INTO done_res VALUES(?)", ("%d,%d" % (la, lo),))
+    db.commit()
 
 
 def chunks_for(c):
@@ -283,7 +315,7 @@ def fetch_chunk(la, lo, pt, stopped):
         for pr in prods:
             r = parse_record(pr)
             if r:
-                rows.append((r["id"], r["lat"], r["lon"], r["inc"], r["emi"], r["side"], r["time"]))
+                rows.append((r["id"], r["lat"], r["lon"], r["inc"], r["emi"], r["side"], r["time"], r["res"]))
         off += len(prods)
         if len(prods) < PAGE:
             return rows
@@ -291,11 +323,14 @@ def fetch_chunk(la, lo, pt, stopped):
 
 
 def db_load(db, c):
-    q = ("SELECT id,lat,lon,inc,emi,side,t FROM recs WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? "
+    q = ("SELECT id,lat,lon,inc,emi,side,t,res FROM recs WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? "
          "AND inc BETWEEN ? AND ? AND (emi IS NULL OR emi BETWEEN ? AND ?)")
-    return [dict(id=a, lat=b, lon=c_, inc=d, emi=e, side=s, time=t)
-            for a, b, c_, d, e, s, t in db.execute(
-                q, (c["latmin"], c["latmax"], c["lonmin"], c["lonmax"], c["incmin"], c["incmax"], c["emimin"], c["emimax"]))]
+    args = [c["latmin"], c["latmax"], c["lonmin"], c["lonmax"], c["incmin"], c["incmax"], c["emimin"], c["emimax"]]
+    if uses_res(c):   # ピクセルスケールが分からない画像は、絞り込むときは除く
+        q += " AND res IS NOT NULL AND res >= ? AND res <= ?"
+        args += [c.get("resmin", 0.0), min(c.get("resmax", math.inf), 1e9)]
+    return [dict(id=a, lat=b, lon=c_, inc=d, emi=e, side=s, time=t, res=rs)
+            for a, b, c_, d, e, s, t, rs in db.execute(q, args)]
 
 
 # ---------------------------------------------------------------- 画像の範囲(footprint)
