@@ -103,6 +103,7 @@ class MapView:
             if bb:
                 bg = cv.create_rectangle(bb[0] - 3, bb[1] - 1, bb[2] + 3, bb[3] + 1, fill=self.th["label_bg"], outline=self.th["sel"])
                 cv.tag_lower(bg, tid)
+        self.draw_quickmap()   # QuickMapアプリにつないでいれば、登録画像のピンとタグ名
         self.draw_points()
         self.draw_mode()
         cv.create_text(4, 4, anchor="nw", text="緯度", font=("", 9), fill=self.th["axis"])
@@ -332,4 +333,4 @@ class MapView:
         if r:
             s += "  |  撮影回数 %d / %d枚 / 入射角 %s / エミッション角 %s / 太陽 %s" % (
                 r["obs"], r["n"], rng(r["inc0"], r["inc1"]), rng(r["emi0"], r["emi1"]), r["side"])
-        self.hover.set(s)
+        self.hover.set(s + self.qm_hover(e.x, e.y))

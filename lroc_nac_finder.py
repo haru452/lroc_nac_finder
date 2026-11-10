@@ -25,10 +25,11 @@ from map_view import MapView
 from results import ResultActions
 from point_filter import PointFilter
 from peek_view import PeekView
+from quickmap_link import QuickmapLink
 
 
 # ---------------------------------------------------------------- GUI
-class App(MapView, ResultActions, PointFilter, PeekView):
+class App(MapView, ResultActions, PointFilter, PeekView, QuickmapLink):
     FIELDS = [   # 3つずつ1行に並ぶ。1行に同じ項目の 最小・最大・差 をまとめる
         ("入射角 最小", "incmin", ""), ("入射角 最大", "incmax", ""), ("入射角の差(°以内)", "incdiff", "5"),
         ("エミッション角 最小", "emimin", ""), ("エミッション角 最大", "emimax", ""), ("エミッション角の差(°以内)", "emidiff", ""),
@@ -65,6 +66,7 @@ class App(MapView, ResultActions, PointFilter, PeekView):
         self.sel = None
         self.drag = None
         self.init_points()
+        self.init_quickmap()
 
         top = ttk.Frame(root)
         top.pack(fill="x", padx=8, pady=4)
@@ -140,7 +142,9 @@ class App(MapView, ResultActions, PointFilter, PeekView):
         ttk.Button(bar2, text="選択セルの画像一覧をCSV保存", command=self.save_cell).pack(fill="x", padx=4, pady=1)
         ttk.Button(bar2, text="順位表をCSV保存", command=self.save_all).pack(fill="x", padx=4, pady=1)
         ttk.Button(bar2, text="GeoJSON書き出し(QuickMap用)", command=lambda: self.export("geojson")).pack(fill="x", padx=4, pady=1)
-        ttk.Button(bar2, text="KML書き出し", command=lambda: self.export("kml")).pack(fill="x", padx=4, pady=(1, 4))
+        ttk.Button(bar2, text="KML書き出し", command=lambda: self.export("kml")).pack(fill="x", padx=4, pady=1)
+        self.qm_btn = ttk.Button(bar2, text="QuickMapアプリにつなげる", command=self.qm_toggle)
+        self.qm_btn.pack(fill="x", padx=4, pady=(1, 4))
 
         self.top = top
         row = ttk.Frame(root)
@@ -416,7 +420,7 @@ class App(MapView, ResultActions, PointFilter, PeekView):
         """保存する項目: 検索の条件と、地図(ヒートマップ)の表示の設定。"""
         d = {"field_" + k: v for k, v in self.v.items()}
         d.update(side=self.side, pt=self.pt, equator=self.equator, eqw=self.eqw, dark=self.dark,
-                 bg_on=self.bg_on, alpha=self.alpha, palette=self.palette, names_on=self.names_on)
+                 bg_on=self.bg_on, alpha=self.alpha, palette=self.palette, names_on=self.names_on, qm_db=self.qm_db)
         return d
 
     def load_settings(self):
